@@ -13,6 +13,10 @@
         body {
             overflow: hidden;
             background: #87CEEB;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
         }
         canvas {
             display: block;
@@ -66,6 +70,7 @@
             color: white;
             font-family: monospace;
             font-size: 12px;
+            cursor: pointer;
         }
         .hotbar-slot.selected {
             border-color: white;
@@ -106,20 +111,176 @@
         #instructions.hidden {
             display: none;
         }
+        .desktop-only {
+            display: block;
+        }
+        .touch-only {
+            display: none;
+        }
+
+        /* Touch Controls */
+        #touch-controls {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 150;
+        }
+        #touch-controls.active {
+            display: block;
+        }
+
+        /* Virtual Joystick */
+        #joystick-zone {
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            width: 40%;
+            height: 50%;
+            pointer-events: auto;
+        }
+        #joystick-base {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 3px solid rgba(255, 255, 255, 0.4);
+            border-radius: 50%;
+            display: none;
+        }
+        #joystick-stick {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+
+        /* Look Zone (right side of screen for camera control) */
+        #look-zone {
+            position: absolute;
+            right: 0;
+            top: 0;
+            width: 60%;
+            height: 70%;
+            pointer-events: auto;
+        }
+
+        /* Action Buttons */
+        #action-buttons {
+            position: absolute;
+            right: 20px;
+            bottom: 100px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            pointer-events: auto;
+        }
+        .action-btn {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            border: 3px solid rgba(255, 255, 255, 0.6);
+            background: rgba(0, 0, 0, 0.4);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .action-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        #break-btn {
+            background: rgba(200, 50, 50, 0.5);
+        }
+        #place-btn {
+            background: rgba(50, 150, 50, 0.5);
+        }
+
+        /* Jump Button */
+        #jump-btn {
+            position: absolute;
+            right: 110px;
+            bottom: 100px;
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            border: 3px solid rgba(255, 255, 255, 0.6);
+            background: rgba(100, 100, 200, 0.5);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #jump-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        /* Touch-friendly hotbar */
+        body.touch-device .hotbar-slot {
+            width: 55px;
+            height: 55px;
+            min-width: 44px;
+            min-height: 44px;
+        }
+        body.touch-device #hotbar {
+            bottom: 15px;
+            gap: 6px;
+        }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
     <div id="hotbar"></div>
     <div id="instructions">
-        <h1>🎮 Minecraft Clone</h1>
-        <p>Click to start playing</p>
-        <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> - Move</p>
-        <p><span class="key">Space</span> - Jump</p>
-        <p><span class="key">Mouse</span> - Look around</p>
-        <p><span class="key">E</span> or <span class="key">Left Click</span> - Break block</p>
-        <p><span class="key">Q</span> or <span class="key">Right Click</span> - Place block</p>
-        <p><span class="key">1-6</span> or <span class="key">Scroll</span> - Select block</p>
+        <h1>Minecraft Clone</h1>
+        <p class="touch-only">Tap to start playing</p>
+        <p class="desktop-only">Click to start playing</p>
+        <div class="desktop-only">
+            <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> - Move</p>
+            <p><span class="key">Space</span> - Jump</p>
+            <p><span class="key">Mouse</span> - Look around</p>
+            <p><span class="key">E</span> or <span class="key">Left Click</span> - Break block</p>
+            <p><span class="key">Q</span> or <span class="key">Right Click</span> - Place block</p>
+            <p><span class="key">1-6</span> or <span class="key">Scroll</span> - Select block</p>
+        </div>
+        <div class="touch-only">
+            <p>Left side - Move joystick</p>
+            <p>Right side - Drag to look</p>
+            <p>JUMP - Jump</p>
+            <p>BREAK / PLACE - Interact with blocks</p>
+            <p>Tap hotbar - Select block</p>
+        </div>
+    </div>
+
+    <!-- Touch Controls -->
+    <div id="touch-controls">
+        <div id="joystick-zone">
+            <div id="joystick-base"></div>
+            <div id="joystick-stick"></div>
+        </div>
+        <div id="look-zone"></div>
+        <div id="action-buttons">
+            <button id="break-btn" class="action-btn">BREAK</button>
+            <button id="place-btn" class="action-btn">PLACE</button>
+        </div>
+        <button id="jump-btn">JUMP</button>
     </div>
 
     <script type="importmap">
@@ -188,6 +349,30 @@
         const JUMP_FORCE = 0.25;
         const MOVE_SPEED = 0.12;
         const MOUSE_SENSITIVITY = 0.002;
+
+        // Touch controls state
+        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        let touchActive = false;
+        const touchState = {
+            joystick: {
+                active: false,
+                startX: 0,
+                startY: 0,
+                currentX: 0,
+                currentY: 0,
+                identifier: null
+            },
+            look: {
+                active: false,
+                lastX: 0,
+                lastY: 0,
+                identifier: null
+            },
+            jump: false,
+            moveDirection: { x: 0, z: 0 }
+        };
+        const TOUCH_SENSITIVITY = 0.004;
+        const JOYSTICK_MAX_DISTANCE = 50;
 
         // Simplex noise implementation
         class SimplexNoise {
@@ -511,6 +696,9 @@
             // Event listeners
             setupEventListeners();
 
+            // Setup touch controls (after hotbar exists)
+            setupTouchControls();
+
             // Start game loop
             animate();
         }
@@ -621,6 +809,201 @@
                 camera.updateProjectionMatrix();
                 renderer.setSize(window.innerWidth, window.innerHeight);
             });
+
+            // Hotbar click/tap selection
+            document.querySelectorAll('.hotbar-slot').forEach(slot => {
+                slot.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    selectedBlock = parseInt(slot.dataset.block);
+                    updateHotbar();
+                });
+            });
+        }
+
+        // Setup touch controls
+        function setupTouchControls() {
+            if (!isTouchDevice) return;
+
+            document.body.classList.add('touch-device');
+            document.getElementById('touch-controls').classList.add('active');
+
+            // Update instructions for touch
+            document.querySelectorAll('.desktop-only').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('.touch-only').forEach(el => el.style.display = 'block');
+
+            const joystickZone = document.getElementById('joystick-zone');
+            const joystickBase = document.getElementById('joystick-base');
+            const joystickStick = document.getElementById('joystick-stick');
+            const lookZone = document.getElementById('look-zone');
+            const breakBtn = document.getElementById('break-btn');
+            const placeBtn = document.getElementById('place-btn');
+            const jumpBtn = document.getElementById('jump-btn');
+
+            // Joystick touch handlers
+            joystickZone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (touchState.joystick.active) return;
+
+                const touch = e.changedTouches[0];
+                touchState.joystick.active = true;
+                touchState.joystick.identifier = touch.identifier;
+                touchState.joystick.startX = touch.clientX;
+                touchState.joystick.startY = touch.clientY;
+                touchState.joystick.currentX = touch.clientX;
+                touchState.joystick.currentY = touch.clientY;
+
+                // Position joystick at touch point
+                joystickBase.style.left = (touch.clientX - 60) + 'px';
+                joystickBase.style.top = (touch.clientY - 60) + 'px';
+                joystickBase.style.display = 'block';
+
+                joystickStick.style.left = touch.clientX + 'px';
+                joystickStick.style.top = touch.clientY + 'px';
+                joystickStick.style.display = 'block';
+
+                // Dismiss instructions on first touch
+                if (!touchActive) {
+                    touchActive = true;
+                    document.getElementById('instructions').classList.add('hidden');
+                }
+            }, { passive: false });
+
+            joystickZone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier === touchState.joystick.identifier) {
+                        touchState.joystick.currentX = touch.clientX;
+                        touchState.joystick.currentY = touch.clientY;
+
+                        // Calculate delta from start
+                        let dx = touch.clientX - touchState.joystick.startX;
+                        let dy = touch.clientY - touchState.joystick.startY;
+
+                        // Limit to max distance
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist > JOYSTICK_MAX_DISTANCE) {
+                            dx = (dx / dist) * JOYSTICK_MAX_DISTANCE;
+                            dy = (dy / dist) * JOYSTICK_MAX_DISTANCE;
+                        }
+
+                        // Update stick position
+                        joystickStick.style.left = (touchState.joystick.startX + dx) + 'px';
+                        joystickStick.style.top = (touchState.joystick.startY + dy) + 'px';
+
+                        // Normalize to -1 to 1
+                        touchState.moveDirection.x = dx / JOYSTICK_MAX_DISTANCE;
+                        touchState.moveDirection.z = dy / JOYSTICK_MAX_DISTANCE;
+                    }
+                }
+            }, { passive: false });
+
+            joystickZone.addEventListener('touchend', (e) => {
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier === touchState.joystick.identifier) {
+                        touchState.joystick.active = false;
+                        touchState.joystick.identifier = null;
+                        touchState.moveDirection.x = 0;
+                        touchState.moveDirection.z = 0;
+
+                        joystickBase.style.display = 'none';
+                        joystickStick.style.display = 'none';
+                    }
+                }
+            });
+
+            joystickZone.addEventListener('touchcancel', (e) => {
+                touchState.joystick.active = false;
+                touchState.joystick.identifier = null;
+                touchState.moveDirection.x = 0;
+                touchState.moveDirection.z = 0;
+                joystickBase.style.display = 'none';
+                joystickStick.style.display = 'none';
+            });
+
+            // Look zone touch handlers
+            lookZone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (touchState.look.active) return;
+
+                const touch = e.changedTouches[0];
+                touchState.look.active = true;
+                touchState.look.identifier = touch.identifier;
+                touchState.look.lastX = touch.clientX;
+                touchState.look.lastY = touch.clientY;
+
+                // Dismiss instructions on first touch
+                if (!touchActive) {
+                    touchActive = true;
+                    document.getElementById('instructions').classList.add('hidden');
+                }
+            }, { passive: false });
+
+            lookZone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier === touchState.look.identifier) {
+                        const dx = touch.clientX - touchState.look.lastX;
+                        const dy = touch.clientY - touchState.look.lastY;
+
+                        player.rotation.y -= dx * TOUCH_SENSITIVITY;
+                        player.rotation.x -= dy * TOUCH_SENSITIVITY;
+                        player.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, player.rotation.x));
+
+                        touchState.look.lastX = touch.clientX;
+                        touchState.look.lastY = touch.clientY;
+                    }
+                }
+            }, { passive: false });
+
+            lookZone.addEventListener('touchend', (e) => {
+                for (const touch of e.changedTouches) {
+                    if (touch.identifier === touchState.look.identifier) {
+                        touchState.look.active = false;
+                        touchState.look.identifier = null;
+                    }
+                }
+            });
+
+            lookZone.addEventListener('touchcancel', (e) => {
+                touchState.look.active = false;
+                touchState.look.identifier = null;
+            });
+
+            // Action buttons
+            breakBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                breakBlock();
+            }, { passive: false });
+
+            placeBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                placeBlock();
+            }, { passive: false });
+
+            // Jump button
+            jumpBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                touchState.jump = true;
+            }, { passive: false });
+
+            jumpBtn.addEventListener('touchend', (e) => {
+                touchState.jump = false;
+            });
+
+            jumpBtn.addEventListener('touchcancel', (e) => {
+                touchState.jump = false;
+            });
+
+            // Dismiss instructions on any touch outside controls
+            document.addEventListener('touchstart', (e) => {
+                if (!touchActive && e.target === renderer.domElement) {
+                    touchActive = true;
+                    document.getElementById('instructions').classList.add('hidden');
+                }
+            });
         }
 
         // Raycasting for block interaction
@@ -716,10 +1099,17 @@
             {
                 const moveDirection = new THREE.Vector3();
 
+                // Keyboard input
                 if (keys['KeyW']) moveDirection.z -= 1;
                 if (keys['KeyS']) moveDirection.z += 1;
                 if (keys['KeyA']) moveDirection.x -= 1;
                 if (keys['KeyD']) moveDirection.x += 1;
+
+                // Touch joystick input
+                if (isTouchDevice && touchState.joystick.active) {
+                    moveDirection.x = touchState.moveDirection.x;
+                    moveDirection.z = touchState.moveDirection.z;
+                }
 
                 moveDirection.normalize();
                 moveDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
@@ -743,8 +1133,8 @@
             player.velocity.y += GRAVITY;
             player.velocity.y = Math.max(player.velocity.y, -0.5); // Terminal velocity
 
-            // Jump
-            if (keys['Space'] && player.onGround) {
+            // Jump (keyboard or touch)
+            if ((keys['Space'] || touchState.jump) && player.onGround) {
                 player.velocity.y = JUMP_FORCE;
                 player.onGround = false;
             }
