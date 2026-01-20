@@ -218,6 +218,28 @@
             background: rgba(50, 150, 50, 0.5);
         }
 
+        /* Pause Button */
+        #pause-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+            border: 2px solid rgba(255, 255, 255, 0.6);
+            background: rgba(0, 0, 0, 0.4);
+            color: white;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #pause-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         /* Jump Button */
         #jump-btn {
             position: absolute;
@@ -296,6 +318,7 @@
             <button id="place-btn" class="action-btn">PLACE</button>
         </div>
         <button id="jump-btn">JUMP</button>
+        <button id="pause-btn">| |</button>
     </div>
 
     <script type="importmap">
@@ -1040,6 +1063,16 @@
             const breakBtn = document.getElementById('break-btn');
             const placeBtn = document.getElementById('place-btn');
             const jumpBtn = document.getElementById('jump-btn');
+            const pauseBtn = document.getElementById('pause-btn');
+
+            // Pause button - shows instructions overlay
+            pauseBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const instructions = document.getElementById('instructions');
+                instructions.classList.toggle('hidden');
+                touchActive = instructions.classList.contains('hidden');
+            }, { passive: false });
 
             // Joystick touch handlers
             joystickZone.addEventListener('touchstart', (e) => {
