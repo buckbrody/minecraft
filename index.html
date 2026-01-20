@@ -56,12 +56,15 @@
             left: 50%;
             transform: translateX(-50%);
             display: flex;
-            gap: 4px;
+            gap: 3px;
             z-index: 100;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 95vw;
         }
         .hotbar-slot {
-            width: 50px;
-            height: 50px;
+            width: 44px;
+            height: 44px;
             background: rgba(0, 0, 0, 0.5);
             border: 2px solid #555;
             display: flex;
@@ -69,7 +72,7 @@
             justify-content: center;
             color: white;
             font-family: monospace;
-            font-size: 12px;
+            font-size: 10px;
             cursor: pointer;
         }
         .hotbar-slot.selected {
@@ -77,9 +80,16 @@
             background: rgba(255, 255, 255, 0.3);
         }
         .block-preview {
-            width: 36px;
-            height: 36px;
+            width: 32px;
+            height: 32px;
             image-rendering: pixelated;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: bold;
+            color: white;
+            text-shadow: 1px 1px 1px black;
         }
         #instructions {
             position: fixed;
@@ -234,14 +244,19 @@
 
         /* Touch-friendly hotbar */
         body.touch-device .hotbar-slot {
-            width: 55px;
-            height: 55px;
+            width: 48px;
+            height: 48px;
             min-width: 44px;
             min-height: 44px;
         }
         body.touch-device #hotbar {
             bottom: 15px;
-            gap: 6px;
+            gap: 4px;
+            max-width: 98vw;
+        }
+        body.touch-device .block-preview {
+            width: 36px;
+            height: 36px;
         }
     </style>
 </head>
@@ -258,7 +273,7 @@
             <p><span class="key">Mouse</span> - Look around</p>
             <p><span class="key">E</span> or <span class="key">Left Click</span> - Break block</p>
             <p><span class="key">Q</span> or <span class="key">Right Click</span> - Place block</p>
-            <p><span class="key">1-6</span> or <span class="key">Scroll</span> - Select block</p>
+            <p><span class="key">1-9, 0</span> or <span class="key">Scroll</span> - Select block</p>
         </div>
         <div class="touch-only">
             <p>Left side - Move joystick</p>
@@ -302,7 +317,12 @@
             STONE: 3,
             WOOD: 4,
             LEAVES: 5,
-            SAND: 6
+            SAND: 6,
+            JEB: 7,
+            WWB: 8,
+            FBB: 9,
+            BENGALS: 10,
+            SKYLINE: 11
         };
 
         const BLOCK_COLORS = {
@@ -311,7 +331,12 @@
             [BLOCKS.STONE]: { top: 0x808080, side: 0x808080, bottom: 0x808080 },
             [BLOCKS.WOOD]: { top: 0xDEB887, side: 0x8B4513, bottom: 0xDEB887 },
             [BLOCKS.LEAVES]: { top: 0x228B22, side: 0x228B22, bottom: 0x228B22 },
-            [BLOCKS.SAND]: { top: 0xF4A460, side: 0xF4A460, bottom: 0xF4A460 }
+            [BLOCKS.SAND]: { top: 0xF4A460, side: 0xF4A460, bottom: 0xF4A460 },
+            [BLOCKS.JEB]: { top: 0x4169E1, side: 0x4169E1, bottom: 0x4169E1 },
+            [BLOCKS.WWB]: { top: 0x32CD32, side: 0x32CD32, bottom: 0x32CD32 },
+            [BLOCKS.FBB]: { top: 0xFF6347, side: 0xFF6347, bottom: 0xFF6347 },
+            [BLOCKS.BENGALS]: { top: 0xFB4F14, side: 0x000000, bottom: 0xFB4F14 },
+            [BLOCKS.SKYLINE]: { top: 0x1C3A6E, side: 0x1C3A6E, bottom: 0x1C3A6E }
         };
 
         const BLOCK_NAMES = {
@@ -320,8 +345,131 @@
             [BLOCKS.STONE]: 'Stone',
             [BLOCKS.WOOD]: 'Wood',
             [BLOCKS.LEAVES]: 'Leaves',
-            [BLOCKS.SAND]: 'Sand'
+            [BLOCKS.SAND]: 'Sand',
+            [BLOCKS.JEB]: 'JEB',
+            [BLOCKS.WWB]: 'WWB',
+            [BLOCKS.FBB]: 'FBB',
+            [BLOCKS.BENGALS]: 'Bengals',
+            [BLOCKS.SKYLINE]: 'Skyline'
         };
+
+        // Custom textured blocks registry
+        const TEXTURED_BLOCKS = new Set([BLOCKS.JEB, BLOCKS.WWB, BLOCKS.FBB, BLOCKS.BENGALS, BLOCKS.SKYLINE]);
+        const blockTextures = {};
+
+        // Create canvas texture for custom blocks
+        function createBlockTexture(type) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+
+            if (type === BLOCKS.JEB) {
+                // Blue block with "JEB" initials
+                ctx.fillStyle = '#4169E1';
+                ctx.fillRect(0, 0, 64, 64);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('JEB', 32, 32);
+                // Add a border
+                ctx.strokeStyle = '#1E3A8A';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(2, 2, 60, 60);
+            }
+            else if (type === BLOCKS.WWB) {
+                // Green block with "WWB" initials
+                ctx.fillStyle = '#32CD32';
+                ctx.fillRect(0, 0, 64, 64);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 22px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('WWB', 32, 32);
+                ctx.strokeStyle = '#166534';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(2, 2, 60, 60);
+            }
+            else if (type === BLOCKS.FBB) {
+                // Red/coral block with "FBB" initials
+                ctx.fillStyle = '#FF6347';
+                ctx.fillRect(0, 0, 64, 64);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('FBB', 32, 32);
+                ctx.strokeStyle = '#B91C1C';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(2, 2, 60, 60);
+            }
+            else if (type === BLOCKS.BENGALS) {
+                // Cincinnati Bengals - Orange with black tiger stripes and "B" logo
+                ctx.fillStyle = '#FB4F14'; // Bengals orange
+                ctx.fillRect(0, 0, 64, 64);
+
+                // Draw tiger stripes
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 6;
+                ctx.beginPath();
+                // Diagonal stripes like tiger pattern
+                ctx.moveTo(0, 20); ctx.lineTo(20, 0);
+                ctx.moveTo(0, 44); ctx.lineTo(44, 0);
+                ctx.moveTo(20, 64); ctx.lineTo(64, 20);
+                ctx.moveTo(44, 64); ctx.lineTo(64, 44);
+                ctx.stroke();
+
+                // Draw the "B" in the center
+                ctx.fillStyle = '#000000';
+                ctx.font = 'bold 36px Georgia';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('B', 32, 34);
+
+                // White outline on B
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 1;
+                ctx.strokeText('B', 32, 34);
+            }
+            else if (type === BLOCKS.SKYLINE) {
+                // Skyline Chili - Blue background with skyline silhouette and text
+                ctx.fillStyle = '#1C3A6E'; // Skyline blue
+                ctx.fillRect(0, 0, 64, 64);
+
+                // Draw city skyline silhouette at bottom
+                ctx.fillStyle = '#D4A574'; // Tan/gold color
+                // Buildings
+                ctx.fillRect(4, 40, 8, 24);   // building 1
+                ctx.fillRect(14, 34, 10, 30); // building 2 (taller)
+                ctx.fillRect(26, 42, 8, 22);  // building 3
+                ctx.fillRect(36, 30, 12, 34); // building 4 (tallest)
+                ctx.fillRect(50, 38, 10, 26); // building 5
+
+                // "SKYLINE" text
+                ctx.fillStyle = '#D4A574';
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('SKYLINE', 32, 14);
+
+                // Small "CHILI" text below
+                ctx.font = 'bold 9px Arial';
+                ctx.fillText('CHILI', 32, 25);
+            }
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return texture;
+        }
+
+        // Initialize textures
+        function initBlockTextures() {
+            for (const type of TEXTURED_BLOCKS) {
+                blockTextures[type] = createBlockTexture(type);
+            }
+        }
 
         // World settings
         const WORLD_SIZE = 64;
@@ -495,6 +643,28 @@
             // Remove existing mesh
             if (meshes.has(key)) {
                 scene.remove(meshes.get(key));
+            }
+
+            // For textured blocks, use a simple box with texture on all faces
+            if (TEXTURED_BLOCKS.has(type)) {
+                // Check if any face is visible
+                const hasVisibleFace =
+                    isFaceVisible(x, y, z, 0, 1, 0) || isFaceVisible(x, y, z, 0, -1, 0) ||
+                    isFaceVisible(x, y, z, 0, 0, 1) || isFaceVisible(x, y, z, 0, 0, -1) ||
+                    isFaceVisible(x, y, z, 1, 0, 0) || isFaceVisible(x, y, z, -1, 0, 0);
+
+                if (!hasVisibleFace) return;
+
+                const geometry = new THREE.BoxGeometry(1, 1, 1);
+                const material = new THREE.MeshLambertMaterial({
+                    map: blockTextures[type]
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+                mesh.userData = { x, y, z, type };
+                scene.add(mesh);
+                meshes.set(key, mesh);
+                return;
             }
 
             const colors = BLOCK_COLORS[type];
@@ -683,6 +853,9 @@
             directionalLight.position.set(50, 100, 50);
             scene.add(directionalLight);
 
+            // Initialize custom block textures
+            initBlockTextures();
+
             // Generate world
             generateWorld();
 
@@ -706,7 +879,7 @@
         // Create hotbar UI
         function createHotbar() {
             const hotbar = document.getElementById('hotbar');
-            const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND];
+            const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND, BLOCKS.JEB, BLOCKS.WWB, BLOCKS.FBB, BLOCKS.BENGALS, BLOCKS.SKYLINE];
 
             blockTypes.forEach((type, index) => {
                 const slot = document.createElement('div');
@@ -714,10 +887,29 @@
                 slot.dataset.block = type;
 
                 const color = BLOCK_COLORS[type].top;
+                const colorHex = color.toString(16).padStart(6, '0');
+                const borderColor = Math.max(0, color - 0x202020).toString(16).padStart(6, '0');
+
+                // Custom preview for special blocks
+                let previewContent = '';
+                if (type === BLOCKS.JEB) {
+                    previewContent = '<span style="font-size:11px;font-weight:bold;">JEB</span>';
+                } else if (type === BLOCKS.WWB) {
+                    previewContent = '<span style="font-size:10px;font-weight:bold;">WWB</span>';
+                } else if (type === BLOCKS.FBB) {
+                    previewContent = '<span style="font-size:11px;font-weight:bold;">FBB</span>';
+                } else if (type === BLOCKS.BENGALS) {
+                    previewContent = '<span style="font-size:14px;font-weight:bold;color:#000;text-shadow:none;">B</span>';
+                } else if (type === BLOCKS.SKYLINE) {
+                    previewContent = '<span style="font-size:7px;font-weight:bold;color:#D4A574;">SKY</span>';
+                }
+
                 slot.innerHTML = `
-                    <div class="block-preview" style="background: #${color.toString(16).padStart(6, '0')}; border: 2px solid #${(color - 0x202020).toString(16).padStart(6, '0')}"></div>
+                    <div class="block-preview" style="background: #${colorHex}; border: 2px solid #${borderColor}">${previewContent}</div>
                 `;
-                slot.title = `${BLOCK_NAMES[type]} (${index + 1})`;
+
+                const keyHint = index < 9 ? index + 1 : (index === 9 ? '0' : '');
+                slot.title = `${BLOCK_NAMES[type]}${keyHint ? ' (' + keyHint + ')' : ''}`;
 
                 hotbar.appendChild(slot);
             });
@@ -771,10 +963,20 @@
                 keys[e.code] = true;
 
                 // Number keys for block selection
-                if (e.code >= 'Digit1' && e.code <= 'Digit6') {
-                    const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND];
-                    selectedBlock = blockTypes[parseInt(e.code.slice(-1)) - 1];
-                    updateHotbar();
+                // Number keys 1-9 and 0 for block selection
+                if (e.code >= 'Digit1' && e.code <= 'Digit9') {
+                    const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND, BLOCKS.JEB, BLOCKS.WWB, BLOCKS.FBB, BLOCKS.BENGALS, BLOCKS.SKYLINE];
+                    const index = parseInt(e.code.slice(-1)) - 1;
+                    if (index < blockTypes.length) {
+                        selectedBlock = blockTypes[index];
+                        updateHotbar();
+                    }
+                } else if (e.code === 'Digit0') {
+                    const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND, BLOCKS.JEB, BLOCKS.WWB, BLOCKS.FBB, BLOCKS.BENGALS, BLOCKS.SKYLINE];
+                    if (blockTypes.length >= 10) {
+                        selectedBlock = blockTypes[9]; // 0 = 10th item
+                        updateHotbar();
+                    }
                 }
 
                 // Q to place block, E to break block
@@ -794,7 +996,7 @@
             document.addEventListener('wheel', (e) => {
                 if (!isPointerLocked) return;
 
-                const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND];
+                const blockTypes = [BLOCKS.GRASS, BLOCKS.DIRT, BLOCKS.STONE, BLOCKS.WOOD, BLOCKS.LEAVES, BLOCKS.SAND, BLOCKS.JEB, BLOCKS.WWB, BLOCKS.FBB, BLOCKS.BENGALS, BLOCKS.SKYLINE];
                 let index = blockTypes.indexOf(selectedBlock);
                 index += Math.sign(e.deltaY);
                 if (index < 0) index = blockTypes.length - 1;
