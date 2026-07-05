@@ -513,6 +513,38 @@
         let selectedBlock = BLOCKS.GRASS;
         let isPointerLocked = false;
 
+        // World persistence — only player edits are saved; terrain is
+        // regenerated deterministically from WORLD_SEED and edits replayed
+        const SAVE_KEY = 'minecraft-world-edits-v1';
+        const edits = new Map();
+        let saveTimer = null;
+
+        function loadEdits() {
+            try {
+                const data = JSON.parse(localStorage.getItem(SAVE_KEY));
+                if (Array.isArray(data)) {
+                    for (const [key, type] of data) {
+                        edits.set(key, type);
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not load saved world:', e);
+            }
+        }
+
+        function saveEdits() {
+            try {
+                localStorage.setItem(SAVE_KEY, JSON.stringify([...edits]));
+            } catch (e) {
+                console.warn('Could not save world:', e);
+            }
+        }
+
+        function scheduleSave() {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(saveEdits, 1000);
+        }
+
         // Player state
         const player = {
             position: new THREE.Vector3(WORLD_SIZE / 2, 20, WORLD_SIZE / 2),
@@ -621,7 +653,21 @@
             }
         }
 
-        const noise = new SimplexNoise(12345);
+        const WORLD_SEED = 12345;
+        const noise = new SimplexNoise(WORLD_SEED);
+
+        // Seeded PRNG so tree placement is deterministic — saved edits are
+        // replayed on top of regenerated terrain, which must match exactly
+        function mulberry32(seed) {
+            return function() {
+                seed |= 0;
+                seed = (seed + 0x6D2B79F5) | 0;
+                let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+        const worldRng = mulberry32(WORLD_SEED);
 
         // Generate height at position
         function getHeight(x, z) {
@@ -648,6 +694,8 @@
 
         function setBlock(x, y, z, type) {
             const key = getBlockKey(x, y, z);
+            edits.set(key, type);
+            scheduleSave();
             if (type === BLOCKS.AIR) {
                 world.delete(key);
                 if (meshes.has(key)) {
@@ -819,12 +867,21 @@
 
             // Generate trees
             for (let i = 0; i < 50; i++) {
-                const tx = Math.floor(Math.random() * (WORLD_SIZE - 4)) + 2;
-                const tz = Math.floor(Math.random() * (WORLD_SIZE - 4)) + 2;
+                const tx = Math.floor(worldRng() * (WORLD_SIZE - 4)) + 2;
+                const tz = Math.floor(worldRng() * (WORLD_SIZE - 4)) + 2;
                 const ty = getHeight(tx, tz);
 
                 if (getBlock(tx, ty - 1, tz) === BLOCKS.GRASS) {
                     generateTree(tx, ty, tz);
+                }
+            }
+
+            // Replay saved player edits on top of the generated terrain
+            for (const [key, type] of edits) {
+                if (type === BLOCKS.AIR) {
+                    world.delete(key);
+                } else {
+                    world.set(key, type);
                 }
             }
 
@@ -837,7 +894,7 @@
 
         // Generate a tree
         function generateTree(x, y, z) {
-            const height = 4 + Math.floor(Math.random() * 3);
+            const height = 4 + Math.floor(worldRng() * 3);
 
             // Trunk
             for (let i = 0; i < height; i++) {
@@ -886,11 +943,20 @@
             // Initialize custom block textures
             initBlockTextures();
 
-            // Generate world
+            // Load saved edits, then generate world (edits are replayed inside)
+            loadEdits();
             generateWorld();
 
-            // Set player position above terrain
-            const spawnHeight = getHeight(Math.floor(player.position.x), Math.floor(player.position.z));
+            // Set player position above the actual terrain (including edits)
+            const sx = Math.floor(player.position.x);
+            const sz = Math.floor(player.position.z);
+            let spawnHeight = getHeight(sx, sz);
+            for (let y = WORLD_HEIGHT + 8; y >= 0; y--) {
+                if (getBlock(sx, y, sz) !== BLOCKS.AIR) {
+                    spawnHeight = y + 1;
+                    break;
+                }
+            }
             player.position.y = spawnHeight + 2;
 
             // Create hotbar
@@ -1040,6 +1106,19 @@
                 camera.aspect = window.innerWidth / window.innerHeight;
                 camera.updateProjectionMatrix();
                 renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            // Flush pending save when backgrounded — iOS Safari kills timers
+            // and may never fire the debounced save otherwise
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') {
+                    clearTimeout(saveTimer);
+                    saveEdits();
+                }
+            });
+            window.addEventListener('pagehide', () => {
+                clearTimeout(saveTimer);
+                saveEdits();
             });
 
             // Hotbar click/tap selection
@@ -1336,7 +1415,7 @@
         }
 
         // Update player physics
-        function updatePlayer() {
+        function updatePlayer(dt) {
             // Movement
             {
                 const moveDirection = new THREE.Vector3();
@@ -1357,8 +1436,8 @@
                 moveDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
 
                 // Apply movement
-                const newX = player.position.x + moveDirection.x * MOVE_SPEED;
-                const newZ = player.position.z + moveDirection.z * MOVE_SPEED;
+                const newX = player.position.x + moveDirection.x * MOVE_SPEED * dt;
+                const newZ = player.position.z + moveDirection.z * MOVE_SPEED * dt;
 
                 // X movement
                 if (!checkCollision(newX, player.position.y, player.position.z)) {
@@ -1372,7 +1451,7 @@
             }
 
             // Gravity with terminal velocity
-            player.velocity.y += GRAVITY;
+            player.velocity.y += GRAVITY * dt;
             player.velocity.y = Math.max(player.velocity.y, -0.5); // Terminal velocity
 
             // Jump (keyboard or touch)
@@ -1383,20 +1462,24 @@
 
             // Y movement with ground detection
             const playerHeight = 1.6;
+            const playerWidth = 0.3;
             const feetY = player.position.y - playerHeight;
 
-            // Find ground level below player
+            // Find ground level below player — scan every column the
+            // bounding box overlaps so standing on a block edge still counts
             let groundY = -100;
-            const px = Math.floor(player.position.x);
-            const pz = Math.floor(player.position.z);
-            for (let checkY = Math.floor(feetY) + 1; checkY >= 0; checkY--) {
-                if (getBlock(px, checkY, pz) !== BLOCKS.AIR) {
-                    groundY = checkY + 1; // Top of the block
-                    break;
+            for (let bx = Math.floor(player.position.x - playerWidth); bx <= Math.floor(player.position.x + playerWidth); bx++) {
+                for (let bz = Math.floor(player.position.z - playerWidth); bz <= Math.floor(player.position.z + playerWidth); bz++) {
+                    for (let checkY = Math.floor(feetY) + 1; checkY >= 0; checkY--) {
+                        if (getBlock(bx, checkY, bz) !== BLOCKS.AIR) {
+                            groundY = Math.max(groundY, checkY + 1); // Top of the block
+                            break;
+                        }
+                    }
                 }
             }
 
-            const newY = player.position.y + player.velocity.y;
+            const newY = player.position.y + player.velocity.y * dt;
             const newFeetY = newY - playerHeight;
 
             // Check if we would go below ground
@@ -1432,14 +1515,23 @@
         }
 
         // Animation loop
+        let lastFrameTime = performance.now();
         function animate() {
             requestAnimationFrame(animate);
-            updatePlayer();
+            const now = performance.now();
+            // dt in 60fps-frame units so tuning constants keep their meaning;
+            // capped to avoid huge steps after tab switches
+            const dt = Math.min((now - lastFrameTime) / (1000 / 60), 3);
+            lastFrameTime = now;
+            updatePlayer(dt);
             renderer.render(scene, camera);
         }
 
         // Start the game
         init();
+
+        // Debug/testing hook (module scope is otherwise unreachable)
+        window.__game = { world, edits, getBlock, setBlock, player, BLOCKS };
     </script>
 </body>
 </html>
