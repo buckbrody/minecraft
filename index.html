@@ -525,10 +525,23 @@
         }
 
         // World persistence — only player edits are saved; terrain is
-        // regenerated deterministically from WORLD_SEED and edits replayed
+        // regenerated deterministically from WORLD_SEED and edits replayed.
+        // editsByChunk lets a streaming chunk replay just its own edits.
         const SAVE_KEY = 'minecraft-world-edits-v1';
         const edits = new Map();
+        const editsByChunk = new Map(); // chunkKey -> Map(blockKey -> type)
         let saveTimer = null;
+
+        function indexEdit(key, type) {
+            const [x, , z] = key.split(',').map(Number);
+            const ck = chunkKeyFor(x, z);
+            let m = editsByChunk.get(ck);
+            if (!m) {
+                m = new Map();
+                editsByChunk.set(ck, m);
+            }
+            m.set(key, type);
+        }
 
         function loadEdits() {
             try {
@@ -536,6 +549,7 @@
                 if (Array.isArray(data)) {
                     for (const [key, type] of data) {
                         edits.set(key, type);
+                        indexEdit(key, type);
                     }
                 }
             } catch (e) {
@@ -668,7 +682,8 @@
         const noise = new SimplexNoise(WORLD_SEED);
 
         // Seeded PRNG so tree placement is deterministic — saved edits are
-        // replayed on top of regenerated terrain, which must match exactly
+        // replayed on top of regenerated terrain, which must match exactly.
+        // Each chunk gets its own seed so chunks can generate in any order.
         function mulberry32(seed) {
             return function() {
                 seed |= 0;
@@ -678,7 +693,9 @@
                 return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
             };
         }
-        const worldRng = mulberry32(WORLD_SEED);
+        function chunkRng(cx, cz) {
+            return mulberry32((Math.imul(cx, 73856093) ^ Math.imul(cz, 19349663) ^ WORLD_SEED) | 0);
+        }
 
         // Generate height at position
         function getHeight(x, z) {
@@ -726,7 +743,9 @@
         // Player-facing block change: records the edit and re-meshes the
         // affected chunk (plus neighbors when the block sits on a border)
         function setBlock(x, y, z, type) {
-            edits.set(getBlockKey(x, y, z), type);
+            const key = getBlockKey(x, y, z);
+            edits.set(key, type);
+            indexEdit(key, type);
             scheduleSave();
             setWorldData(x, y, z, type);
 
@@ -840,12 +859,24 @@
             if (built.length > 0) chunkMeshes.set(ck, built);
         }
 
-        // Generate terrain
-        function generateWorld() {
-            for (let x = 0; x < WORLD_SIZE; x++) {
-                for (let z = 0; z < WORLD_SIZE; z++) {
-                    const height = getHeight(x, z);
+        // Infinite world: chunks generate on demand as the player explores
+        // and unload when far away. Edits persist globally and replay when
+        // a chunk regenerates.
+        const RENDER_DISTANCE = 4;  // chunks generated around the player
+        const UNLOAD_DISTANCE = 6;  // chunks dropped beyond this
+        const generatedChunks = new Set();
+        let unloadCooldown = 0;
 
+        function generateChunkTerrain(cx, cz) {
+            const ck = `${cx},${cz}`;
+            if (generatedChunks.has(ck)) return;
+            generatedChunks.add(ck);
+
+            const x0 = cx * CHUNK_SIZE;
+            const z0 = cz * CHUNK_SIZE;
+            for (let x = x0; x < x0 + CHUNK_SIZE; x++) {
+                for (let z = z0; z < z0 + CHUNK_SIZE; z++) {
+                    const height = getHeight(x, z);
                     for (let y = 0; y < height; y++) {
                         let blockType;
                         if (y === height - 1) {
@@ -860,32 +891,104 @@
                 }
             }
 
-            // Generate trees
-            for (let i = 0; i < 50; i++) {
-                const tx = Math.floor(worldRng() * (WORLD_SIZE - 4)) + 2;
-                const tz = Math.floor(worldRng() * (WORLD_SIZE - 4)) + 2;
+            // Trees: trunk at least 2 in from the chunk edge so radius-2
+            // leaves never cross into a neighboring chunk — generation
+            // stays deterministic regardless of chunk visit order
+            const rng = chunkRng(cx, cz);
+            const treeCount = 1 + Math.floor(rng() * 4);
+            for (let i = 0; i < treeCount; i++) {
+                const tx = x0 + 2 + Math.floor(rng() * (CHUNK_SIZE - 4));
+                const tz = z0 + 2 + Math.floor(rng() * (CHUNK_SIZE - 4));
                 const ty = getHeight(tx, tz);
-
                 if (getBlock(tx, ty - 1, tz) === BLOCKS.GRASS) {
-                    generateTree(tx, ty, tz);
+                    generateTree(tx, ty, tz, rng);
                 }
             }
 
-            // Replay saved player edits on top of the generated terrain
-            for (const [key, type] of edits) {
-                const [x, y, z] = key.split(',').map(Number);
-                setWorldData(x, y, z, type);
+            // Replay this chunk's saved player edits
+            const chunkEdits = editsByChunk.get(ck);
+            if (chunkEdits) {
+                for (const [key, type] of chunkEdits) {
+                    const [x, y, z] = key.split(',').map(Number);
+                    setWorldData(x, y, z, type);
+                }
+            }
+        }
+
+        // Generate terrain + mesh for a chunk, refreshing generated
+        // neighbors so faces along the shared border get culled correctly
+        function ensureChunk(cx, cz) {
+            const ck = `${cx},${cz}`;
+            if (generatedChunks.has(ck)) return;
+            generateChunkTerrain(cx, cz);
+            rebuildChunk(ck);
+            for (const [nx, nz] of [[cx+1,cz],[cx-1,cz],[cx,cz+1],[cx,cz-1]]) {
+                if (generatedChunks.has(`${nx},${nz}`)) {
+                    rebuildChunk(`${nx},${nz}`);
+                }
+            }
+        }
+
+        function unloadChunk(ck) {
+            const old = chunkMeshes.get(ck);
+            if (old) {
+                for (const mesh of old) {
+                    scene.remove(mesh);
+                    mesh.geometry.dispose();
+                }
+                chunkMeshes.delete(ck);
+            }
+            const idx = chunkIndex.get(ck);
+            if (idx) {
+                for (const key of idx) world.delete(key);
+                chunkIndex.delete(ck);
+            }
+            generatedChunks.delete(ck);
+        }
+
+        // Called every frame: keeps the area around the player generated,
+        // streaming in at most one new distant chunk per frame
+        function updateChunks() {
+            const pcx = Math.floor(player.position.x / CHUNK_SIZE);
+            const pcz = Math.floor(player.position.z / CHUNK_SIZE);
+
+            // The 3x3 under the player must always exist (physics safety)
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    ensureChunk(pcx + dx, pcz + dz);
+                }
             }
 
-            // Build merged chunk meshes
-            for (const ck of chunkIndex.keys()) {
-                rebuildChunk(ck);
+            // Stream in the nearest missing chunk within render distance
+            let best = null;
+            let bestD = Infinity;
+            for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+                for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+                    if (generatedChunks.has(`${pcx + dx},${pcz + dz}`)) continue;
+                    const d = dx * dx + dz * dz;
+                    if (d < bestD) {
+                        bestD = d;
+                        best = [pcx + dx, pcz + dz];
+                    }
+                }
+            }
+            if (best) ensureChunk(best[0], best[1]);
+
+            // Periodically drop chunks far behind the player
+            if (++unloadCooldown >= 60) {
+                unloadCooldown = 0;
+                for (const ck of [...generatedChunks]) {
+                    const [cx, cz] = ck.split(',').map(Number);
+                    if (Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz)) > UNLOAD_DISTANCE) {
+                        unloadChunk(ck);
+                    }
+                }
             }
         }
 
         // Generate a tree
-        function generateTree(x, y, z) {
-            const height = 4 + Math.floor(worldRng() * 3);
+        function generateTree(x, y, z, rng) {
+            const height = 4 + Math.floor(rng() * 3);
 
             // Trunk
             for (let i = 0; i < height; i++) {
@@ -912,7 +1015,9 @@
         function init() {
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
-            scene.fog = new THREE.Fog(0x87CEEB, 30, 80);
+            // Fog far distance sits just inside RENDER_DISTANCE (4 chunks =
+            // 64 blocks) so the edge of generated terrain is never visible
+            scene.fog = new THREE.Fog(0x87CEEB, 30, 60);
 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.copy(player.position);
@@ -945,9 +1050,16 @@
                 });
             }
 
-            // Load saved edits, then generate world (edits are replayed inside)
+            // Load saved edits, then generate the area around spawn
+            // synchronously; farther chunks stream in during play
             loadEdits();
-            generateWorld();
+            const scx = Math.floor(player.position.x / CHUNK_SIZE);
+            const scz = Math.floor(player.position.z / CHUNK_SIZE);
+            for (let dx = -2; dx <= 2; dx++) {
+                for (let dz = -2; dz <= 2; dz++) {
+                    ensureChunk(scx + dx, scz + dz);
+                }
+            }
 
             // Set player position above the actual terrain (including edits)
             const sx = Math.floor(player.position.x);
@@ -1660,10 +1772,6 @@
                 player.velocity.y = 0;
             }
 
-            // Keep player in bounds
-            player.position.x = Math.max(0.5, Math.min(WORLD_SIZE - 0.5, player.position.x));
-            player.position.z = Math.max(0.5, Math.min(WORLD_SIZE - 0.5, player.position.z));
-
             // Prevent falling through world
             if (player.position.y < -10) {
                 player.position.y = 30;
@@ -1686,6 +1794,7 @@
             // capped to avoid huge steps after tab switches
             const dt = Math.min((now - lastFrameTime) / (1000 / 60), 3);
             lastFrameTime = now;
+            updateChunks();
             updatePlayer(dt);
             updateParticles(dt);
             renderer.render(scene, camera);
