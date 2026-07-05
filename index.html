@@ -509,9 +509,20 @@
         // Game state
         let scene, camera, renderer;
         let world = new Map();
-        let meshes = new Map();
         let selectedBlock = BLOCKS.GRASS;
         let isPointerLocked = false;
+
+        // Chunked rendering: blocks are merged into one geometry per chunk
+        // per material, so the world draws in tens of calls instead of
+        // one draw call per block
+        const chunkMeshes = new Map();  // chunkKey -> array of THREE.Mesh
+        const chunkIndex = new Map();   // chunkKey -> Set of block keys
+        let solidMaterial, leavesMaterial;
+        const texturedMaterials = {};
+
+        function chunkKeyFor(x, z) {
+            return `${Math.floor(x / CHUNK_SIZE)},${Math.floor(z / CHUNK_SIZE)}`;
+        }
 
         // World persistence — only player edits are saved; terrain is
         // regenerated deterministically from WORLD_SEED and edits replayed
@@ -692,21 +703,39 @@
             return world.get(getBlockKey(x, y, z)) || BLOCKS.AIR;
         }
 
-        function setBlock(x, y, z, type) {
+        // Low-level world write: keeps the per-chunk index in sync.
+        // Does NOT touch meshes — callers rebuild chunks when appropriate.
+        function setWorldData(x, y, z, type) {
             const key = getBlockKey(x, y, z);
-            edits.set(key, type);
-            scheduleSave();
+            const ck = chunkKeyFor(x, z);
             if (type === BLOCKS.AIR) {
                 world.delete(key);
-                if (meshes.has(key)) {
-                    scene.remove(meshes.get(key));
-                    meshes.delete(key);
-                }
+                const idx = chunkIndex.get(ck);
+                if (idx) idx.delete(key);
             } else {
                 world.set(key, type);
-                createBlockMesh(x, y, z, type);
+                let idx = chunkIndex.get(ck);
+                if (!idx) {
+                    idx = new Set();
+                    chunkIndex.set(ck, idx);
+                }
+                idx.add(key);
             }
-            updateNeighborMeshes(x, y, z);
+        }
+
+        // Player-facing block change: records the edit and re-meshes the
+        // affected chunk (plus neighbors when the block sits on a border)
+        function setBlock(x, y, z, type) {
+            edits.set(getBlockKey(x, y, z), type);
+            scheduleSave();
+            setWorldData(x, y, z, type);
+
+            const affected = new Set([
+                chunkKeyFor(x, z),
+                chunkKeyFor(x + 1, z), chunkKeyFor(x - 1, z),
+                chunkKeyFor(x, z + 1), chunkKeyFor(x, z - 1)
+            ]);
+            for (const ck of affected) rebuildChunk(ck);
         }
 
         // Check if face is visible
@@ -714,135 +743,101 @@
             return getBlock(x + dx, y + dy, z + dz) === BLOCKS.AIR;
         }
 
-        // Create block mesh with only visible faces
-        function createBlockMesh(x, y, z, type) {
-            const key = getBlockKey(x, y, z);
+        // Face definitions: corner offsets (v1..v4), normal, and which
+        // BLOCK_COLORS entry the face uses. Triangles are v1,v2,v3 + v1,v3,v4;
+        // UVs (0,0),(1,0),(1,1),(0,1) keep textures upright on side faces.
+        const FACES = [
+            { dir: [0, 1, 0],  corners: [[0,1,0],[0,1,1],[1,1,1],[1,1,0]], colorKey: 'top' },
+            { dir: [0, -1, 0], corners: [[0,0,1],[0,0,0],[1,0,0],[1,0,1]], colorKey: 'bottom' },
+            { dir: [0, 0, 1],  corners: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], colorKey: 'side' },
+            { dir: [0, 0, -1], corners: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], colorKey: 'side' },
+            { dir: [1, 0, 0],  corners: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]], colorKey: 'side' },
+            { dir: [-1, 0, 0], corners: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]], colorKey: 'side' }
+        ];
+        const FACE_UVS = [[0,0],[1,0],[1,1],[0,0],[1,1],[0,1]];
 
-            // Remove existing mesh
-            if (meshes.has(key)) {
-                scene.remove(meshes.get(key));
-            }
-
-            // For textured blocks, use a simple box with texture on all faces
-            if (TEXTURED_BLOCKS.has(type)) {
-                // Check if any face is visible
-                const hasVisibleFace =
-                    isFaceVisible(x, y, z, 0, 1, 0) || isFaceVisible(x, y, z, 0, -1, 0) ||
-                    isFaceVisible(x, y, z, 0, 0, 1) || isFaceVisible(x, y, z, 0, 0, -1) ||
-                    isFaceVisible(x, y, z, 1, 0, 0) || isFaceVisible(x, y, z, -1, 0, 0);
-
-                if (!hasVisibleFace) return;
-
-                const geometry = new THREE.BoxGeometry(1, 1, 1);
-                const material = new THREE.MeshLambertMaterial({
-                    map: blockTextures[type]
-                });
-                const mesh = new THREE.Mesh(geometry, material);
-                mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
-                mesh.userData = { x, y, z, type };
-                scene.add(mesh);
-                meshes.set(key, mesh);
-                return;
-            }
-
-            const colors = BLOCK_COLORS[type];
-            const geometry = new THREE.BufferGeometry();
-            const vertices = [];
-            const normals = [];
-            const vertexColors = [];
-
-            // Helper to add a face
-            const addFace = (v1, v2, v3, v4, normal, color) => {
-                vertices.push(...v1, ...v2, ...v3, ...v1, ...v3, ...v4);
-                for (let i = 0; i < 6; i++) {
-                    normals.push(...normal);
-                    const c = new THREE.Color(color);
-                    vertexColors.push(c.r, c.g, c.b);
+        // Rebuild the merged meshes for one chunk. Buckets: opaque
+        // vertex-colored blocks, translucent leaves, and one bucket per
+        // textured block type (each needs its own texture map).
+        function rebuildChunk(ck) {
+            const old = chunkMeshes.get(ck);
+            if (old) {
+                for (const mesh of old) {
+                    scene.remove(mesh);
+                    mesh.geometry.dispose();
                 }
+                chunkMeshes.delete(ck);
+            }
+
+            const idx = chunkIndex.get(ck);
+            if (!idx || idx.size === 0) return;
+
+            const solid = { positions: [], normals: [], colors: [] };
+            const leaves = { positions: [], normals: [], colors: [] };
+            const textured = new Map(); // type -> { positions, normals, uvs }
+            const color = new THREE.Color();
+
+            for (const key of idx) {
+                const type = world.get(key);
+                if (type === undefined) continue;
+                const [x, y, z] = key.split(',').map(Number);
+                const isTextured = TEXTURED_BLOCKS.has(type);
+
+                let bucket;
+                if (isTextured) {
+                    bucket = textured.get(type);
+                    if (!bucket) {
+                        bucket = { positions: [], normals: [], uvs: [] };
+                        textured.set(type, bucket);
+                    }
+                } else {
+                    bucket = type === BLOCKS.LEAVES ? leaves : solid;
+                }
+
+                for (const face of FACES) {
+                    const [dx, dy, dz] = face.dir;
+                    if (!isFaceVisible(x, y, z, dx, dy, dz)) continue;
+
+                    const c = face.corners;
+                    for (const i of [0, 1, 2, 0, 2, 3]) {
+                        bucket.positions.push(x + c[i][0], y + c[i][1], z + c[i][2]);
+                        bucket.normals.push(dx, dy, dz);
+                    }
+                    if (isTextured) {
+                        for (const [u, v] of FACE_UVS) bucket.uvs.push(u, v);
+                    } else {
+                        color.set(BLOCK_COLORS[type][face.colorKey]);
+                        for (let i = 0; i < 6; i++) {
+                            bucket.colors.push(color.r, color.g, color.b);
+                        }
+                    }
+                }
+            }
+
+            const built = [];
+            const buildMesh = (data, material) => {
+                if (data.positions.length === 0) return;
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+                geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+                if (data.colors) {
+                    geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
+                }
+                if (data.uvs) {
+                    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));
+                }
+                const mesh = new THREE.Mesh(geometry, material);
+                scene.add(mesh);
+                built.push(mesh);
             };
 
-            // Top face (+Y)
-            if (isFaceVisible(x, y, z, 0, 1, 0)) {
-                addFace(
-                    [0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0],
-                    [0, 1, 0], colors.top
-                );
+            buildMesh(solid, solidMaterial);
+            buildMesh(leaves, leavesMaterial);
+            for (const [type, data] of textured) {
+                buildMesh(data, texturedMaterials[type]);
             }
 
-            // Bottom face (-Y)
-            if (isFaceVisible(x, y, z, 0, -1, 0)) {
-                addFace(
-                    [0, 0, 1], [0, 0, 0], [1, 0, 0], [1, 0, 1],
-                    [0, -1, 0], colors.bottom
-                );
-            }
-
-            // Front face (+Z)
-            if (isFaceVisible(x, y, z, 0, 0, 1)) {
-                addFace(
-                    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
-                    [0, 0, 1], colors.side
-                );
-            }
-
-            // Back face (-Z)
-            if (isFaceVisible(x, y, z, 0, 0, -1)) {
-                addFace(
-                    [1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0],
-                    [0, 0, -1], colors.side
-                );
-            }
-
-            // Right face (+X)
-            if (isFaceVisible(x, y, z, 1, 0, 0)) {
-                addFace(
-                    [1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1],
-                    [1, 0, 0], colors.side
-                );
-            }
-
-            // Left face (-X)
-            if (isFaceVisible(x, y, z, -1, 0, 0)) {
-                addFace(
-                    [0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0],
-                    [-1, 0, 0], colors.side
-                );
-            }
-
-            if (vertices.length === 0) return;
-
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-            geometry.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
-
-            const material = new THREE.MeshLambertMaterial({
-                vertexColors: true,
-                transparent: type === BLOCKS.LEAVES,
-                opacity: type === BLOCKS.LEAVES ? 0.9 : 1
-            });
-
-            const mesh = new THREE.Mesh(geometry, material);
-            mesh.position.set(x, y, z);
-            mesh.userData = { x, y, z, type };
-
-            scene.add(mesh);
-            meshes.set(key, mesh);
-        }
-
-        // Update neighboring block meshes
-        function updateNeighborMeshes(x, y, z) {
-            const neighbors = [
-                [x+1, y, z], [x-1, y, z],
-                [x, y+1, z], [x, y-1, z],
-                [x, y, z+1], [x, y, z-1]
-            ];
-
-            for (const [nx, ny, nz] of neighbors) {
-                const type = getBlock(nx, ny, nz);
-                if (type !== BLOCKS.AIR) {
-                    createBlockMesh(nx, ny, nz, type);
-                }
-            }
+            if (built.length > 0) chunkMeshes.set(ck, built);
         }
 
         // Generate terrain
@@ -860,7 +855,7 @@
                         } else {
                             blockType = BLOCKS.STONE;
                         }
-                        world.set(getBlockKey(x, y, z), blockType);
+                        setWorldData(x, y, z, blockType);
                     }
                 }
             }
@@ -878,17 +873,13 @@
 
             // Replay saved player edits on top of the generated terrain
             for (const [key, type] of edits) {
-                if (type === BLOCKS.AIR) {
-                    world.delete(key);
-                } else {
-                    world.set(key, type);
-                }
+                const [x, y, z] = key.split(',').map(Number);
+                setWorldData(x, y, z, type);
             }
 
-            // Create all meshes
-            for (const [key, type] of world) {
-                const [x, y, z] = key.split(',').map(Number);
-                createBlockMesh(x, y, z, type);
+            // Build merged chunk meshes
+            for (const ck of chunkIndex.keys()) {
+                rebuildChunk(ck);
             }
         }
 
@@ -898,7 +889,7 @@
 
             // Trunk
             for (let i = 0; i < height; i++) {
-                world.set(getBlockKey(x, y + i, z), BLOCKS.WOOD);
+                setWorldData(x, y + i, z, BLOCKS.WOOD);
             }
 
             // Leaves
@@ -909,9 +900,8 @@
                     for (let dz = -radius; dz <= radius; dz++) {
                         if (dx === 0 && dz === 0 && dy < 2) continue;
                         if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue;
-                        const key = getBlockKey(x + dx, leafStart + dy, z + dz);
-                        if (!world.has(key)) {
-                            world.set(key, BLOCKS.LEAVES);
+                        if (!world.has(getBlockKey(x + dx, leafStart + dy, z + dz))) {
+                            setWorldData(x + dx, leafStart + dy, z + dz, BLOCKS.LEAVES);
                         }
                     }
                 }
@@ -929,7 +919,8 @@
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
+            // Cap DPR: 3x Retina renders 9x the pixels for no visible gain
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             document.body.appendChild(renderer.domElement);
 
             // Lighting
@@ -942,6 +933,17 @@
 
             // Initialize custom block textures
             initBlockTextures();
+
+            // Shared materials for chunk meshes
+            solidMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+            leavesMaterial = new THREE.MeshLambertMaterial({
+                vertexColors: true, transparent: true, opacity: 0.9
+            });
+            for (const type of TEXTURED_BLOCKS) {
+                texturedMaterials[type] = new THREE.MeshLambertMaterial({
+                    map: blockTextures[type]
+                });
+            }
 
             // Load saved edits, then generate world (edits are replayed inside)
             loadEdits();
@@ -1327,21 +1329,48 @@
             });
         }
 
-        // Raycasting for block interaction
+        // Voxel raycast (Amanatides & Woo DDA): walks the ray cell-by-cell
+        // through the block grid — O(ray length) instead of intersecting
+        // every mesh in the scene
+        const REACH = 6;
         function getRaycastHit() {
-            const raycaster = new THREE.Raycaster();
-            raycaster.far = 6;
+            const dir = new THREE.Vector3(0, 0, -1);
+            dir.applyEuler(new THREE.Euler(player.rotation.x, player.rotation.y, 0, 'YXZ'));
+            const origin = camera.position;
 
-            const direction = new THREE.Vector3(0, 0, -1);
-            direction.applyEuler(new THREE.Euler(player.rotation.x, player.rotation.y, 0, 'YXZ'));
+            let x = Math.floor(origin.x);
+            let y = Math.floor(origin.y);
+            let z = Math.floor(origin.z);
 
-            raycaster.set(camera.position, direction);
+            const stepX = dir.x >= 0 ? 1 : -1;
+            const stepY = dir.y >= 0 ? 1 : -1;
+            const stepZ = dir.z >= 0 ? 1 : -1;
 
-            const meshArray = Array.from(meshes.values());
-            const intersects = raycaster.intersectObjects(meshArray);
+            const tDeltaX = Math.abs(1 / dir.x);
+            const tDeltaY = Math.abs(1 / dir.y);
+            const tDeltaZ = Math.abs(1 / dir.z);
 
-            if (intersects.length > 0) {
-                return intersects[0];
+            let tMaxX = dir.x !== 0 ? (stepX > 0 ? x + 1 - origin.x : origin.x - x) * tDeltaX : Infinity;
+            let tMaxY = dir.y !== 0 ? (stepY > 0 ? y + 1 - origin.y : origin.y - y) * tDeltaY : Infinity;
+            let tMaxZ = dir.z !== 0 ? (stepZ > 0 ? z + 1 - origin.z : origin.z - z) * tDeltaZ : Infinity;
+
+            let t = 0;
+            let normal = null; // face entered through; null for the start cell
+
+            while (t <= REACH) {
+                if (normal && getBlock(x, y, z) !== BLOCKS.AIR) {
+                    return { x, y, z, normal };
+                }
+                if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+                    x += stepX; t = tMaxX; tMaxX += tDeltaX;
+                    normal = { x: -stepX, y: 0, z: 0 };
+                } else if (tMaxY < tMaxZ) {
+                    y += stepY; t = tMaxY; tMaxY += tDeltaY;
+                    normal = { x: 0, y: -stepY, z: 0 };
+                } else {
+                    z += stepZ; t = tMaxZ; tMaxZ += tDeltaZ;
+                    normal = { x: 0, y: 0, z: -stepZ };
+                }
             }
             return null;
         }
@@ -1350,8 +1379,7 @@
         function breakBlock() {
             const hit = getRaycastHit();
             if (hit) {
-                const { x, y, z } = hit.object.userData;
-                setBlock(x, y, z, BLOCKS.AIR);
+                setBlock(hit.x, hit.y, hit.z, BLOCKS.AIR);
             }
         }
 
@@ -1359,11 +1387,9 @@
         function placeBlock() {
             const hit = getRaycastHit();
             if (hit) {
-                const { x, y, z } = hit.object.userData;
-                const normal = hit.face.normal;
-                const newX = x + Math.round(normal.x);
-                const newY = y + Math.round(normal.y);
-                const newZ = z + Math.round(normal.z);
+                const newX = hit.x + hit.normal.x;
+                const newY = hit.y + hit.normal.y;
+                const newZ = hit.z + hit.normal.z;
 
                 // Don't place inside player
                 const playerBox = new THREE.Box3(
@@ -1531,7 +1557,7 @@
         init();
 
         // Debug/testing hook (module scope is otherwise unreachable)
-        window.__game = { world, edits, getBlock, setBlock, player, BLOCKS };
+        window.__game = { world, edits, getBlock, setBlock, getRaycastHit, player, BLOCKS, renderer };
     </script>
 </body>
 </html>
