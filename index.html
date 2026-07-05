@@ -1110,6 +1110,12 @@
                 renderer.setSize(window.innerWidth, window.innerHeight);
             });
 
+            // Unlock audio on the first gesture — iOS/Safari only allow
+            // AudioContext to start inside a user interaction
+            const unlockAudio = () => { try { getAudio(); } catch (e) {} };
+            document.addEventListener('pointerdown', unlockAudio, { once: true });
+            document.addEventListener('touchstart', unlockAudio, { once: true });
+
             // Flush pending save when backgrounded — iOS Safari kills timers
             // and may never fire the debounced save otherwise
             document.addEventListener('visibilitychange', () => {
@@ -1329,6 +1335,132 @@
             });
         }
 
+        // --- Sound effects (synthesized with Web Audio, no asset files) ---
+        let audioCtx = null;
+        let noiseBuffer = null;
+
+        function getAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            return audioCtx;
+        }
+
+        function getNoiseBuffer(ctx) {
+            if (!noiseBuffer) {
+                noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+                const data = noiseBuffer.getChannelData(0);
+                for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+            }
+            return noiseBuffer;
+        }
+
+        // Crunchy noise burst
+        function playBreakSound() {
+            try {
+                const ctx = getAudio();
+                const src = ctx.createBufferSource();
+                src.buffer = getNoiseBuffer(ctx);
+                src.playbackRate.value = 0.7 + Math.random() * 0.4;
+                const filter = ctx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = 900;
+                const gain = ctx.createGain();
+                gain.gain.setValueAtTime(0.25, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+                src.connect(filter);
+                filter.connect(gain);
+                gain.connect(ctx.destination);
+                src.start();
+                src.stop(ctx.currentTime + 0.15);
+            } catch (e) { /* audio unavailable — play silently */ }
+        }
+
+        // Low thunk
+        function playPlaceSound() {
+            try {
+                const ctx = getAudio();
+                const osc = ctx.createOscillator();
+                osc.type = 'triangle';
+                const f = 160 + Math.random() * 40;
+                osc.frequency.setValueAtTime(f, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(f * 0.6, ctx.currentTime + 0.08);
+                const gain = ctx.createGain();
+                gain.gain.setValueAtTime(0.2, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.12);
+            } catch (e) { /* audio unavailable — play silently */ }
+        }
+
+        // Soft upward blip
+        function playJumpSound() {
+            try {
+                const ctx = getAudio();
+                const osc = ctx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(220, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(380, ctx.currentTime + 0.1);
+                const gain = ctx.createGain();
+                gain.gain.setValueAtTime(0.06, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.14);
+            } catch (e) { /* audio unavailable — play silently */ }
+        }
+
+        // --- Block-break particles ---
+        const particles = [];
+        const particleGeometry = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+
+        function spawnBreakParticles(x, y, z, type) {
+            const colors = BLOCK_COLORS[type] || BLOCK_COLORS[BLOCKS.STONE];
+            const material = new THREE.MeshBasicMaterial({
+                color: colors.top, transparent: true
+            });
+            for (let i = 0; i < 12; i++) {
+                const mesh = new THREE.Mesh(particleGeometry, material);
+                mesh.position.set(
+                    x + 0.2 + Math.random() * 0.6,
+                    y + 0.2 + Math.random() * 0.6,
+                    z + 0.2 + Math.random() * 0.6
+                );
+                scene.add(mesh);
+                particles.push({
+                    mesh,
+                    material,
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.12,
+                        Math.random() * 0.12 + 0.04,
+                        (Math.random() - 0.5) * 0.12
+                    ),
+                    life: 1
+                });
+            }
+        }
+
+        function updateParticles(dt) {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.life -= 0.03 * dt;
+                if (p.life <= 0) {
+                    scene.remove(p.mesh);
+                    p.material.dispose();
+                    particles.splice(i, 1);
+                    continue;
+                }
+                p.velocity.y += GRAVITY * 0.5 * dt;
+                p.mesh.position.addScaledVector(p.velocity, dt);
+                p.material.opacity = Math.min(1, p.life * 2);
+                p.mesh.scale.setScalar(0.5 + p.life * 0.5);
+            }
+        }
+
         // Voxel raycast (Amanatides & Woo DDA): walks the ray cell-by-cell
         // through the block grid — O(ray length) instead of intersecting
         // every mesh in the scene
@@ -1379,7 +1511,10 @@
         function breakBlock() {
             const hit = getRaycastHit();
             if (hit) {
+                const type = getBlock(hit.x, hit.y, hit.z);
                 setBlock(hit.x, hit.y, hit.z, BLOCKS.AIR);
+                spawnBreakParticles(hit.x, hit.y, hit.z, type);
+                playBreakSound();
             }
         }
 
@@ -1403,6 +1538,7 @@
 
                 if (!playerBox.intersectsBox(blockBox)) {
                     setBlock(newX, newY, newZ, selectedBlock);
+                    playPlaceSound();
                 }
             }
         }
@@ -1484,6 +1620,7 @@
             if ((keys['Space'] || touchState.jump) && player.onGround) {
                 player.velocity.y = JUMP_FORCE;
                 player.onGround = false;
+                playJumpSound();
             }
 
             // Y movement with ground detection
@@ -1550,6 +1687,7 @@
             const dt = Math.min((now - lastFrameTime) / (1000 / 60), 3);
             lastFrameTime = now;
             updatePlayer(dt);
+            updateParticles(dt);
             renderer.render(scene, camera);
         }
 
@@ -1557,7 +1695,7 @@
         init();
 
         // Debug/testing hook (module scope is otherwise unreachable)
-        window.__game = { world, edits, getBlock, setBlock, getRaycastHit, player, BLOCKS, renderer };
+        window.__game = { world, edits, getBlock, setBlock, getRaycastHit, breakBlock, particles, player, BLOCKS, renderer };
     </script>
 </body>
 </html>
